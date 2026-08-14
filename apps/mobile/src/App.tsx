@@ -185,7 +185,9 @@ export function App() {
           aria-expanded={connectionOpen}
         >
           <span className={`status-dot ${connection}`} aria-hidden="true" />
-          <span className="connection-label">{connectionLabel(connection)}</span>
+          <span className="connection-label">
+            {connectionLabel(connection)}
+          </span>
           <span className="connection-gear" aria-hidden="true">
             <Icon name="settings" />
           </span>
@@ -367,16 +369,25 @@ function SessionsView({
   const [harnessId, setHarnessId] = useState("");
   const [cwd, setCwd] = useState("");
   const [prompt, setPrompt] = useState("");
+  const [fullAccess, setFullAccess] = useState(false);
   const [input, setInput] = useState("");
   const [mobileTerminal, setMobileTerminal] = useState(false);
   const outputRef = useRef<HTMLPreElement>(null);
   const availableHarnesses =
     machine?.harnesses.filter((harness) => harness.available) ?? [];
+  const selectedHarness = availableHarnesses.find(
+    (harness) => harness.id === harnessId,
+  );
 
   useEffect(() => {
     setHarnessId(availableHarnesses[0]?.id ?? "");
     setCwd(machine?.allowedRoots[0] ?? "");
+    setFullAccess(false);
   }, [machine?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!selectedHarness?.fullAccessSupported) setFullAccess(false);
+  }, [selectedHarness?.id, selectedHarness?.fullAccessSupported]);
 
   useEffect(() => {
     if (outputRef.current)
@@ -401,11 +412,13 @@ function SessionsView({
         machineId: machine.id,
         harnessId,
         cwd,
+        accessMode: fullAccess ? "full" : "approval",
         ...(prompt.trim() ? { initialPrompt: prompt.trim() } : {}),
       });
       await onChanged();
       onSelect(result.session.id);
       setPrompt("");
+      setFullAccess(false);
       setShowNew(false);
       setMobileTerminal(true);
       notify("会话已在电脑上启动");
@@ -461,7 +474,10 @@ function SessionsView({
               onClick={() => openSession(session.id)}
               aria-pressed={session.id === selectedSession?.id}
             >
-              <span className={`state-bar ${session.state}`} aria-hidden="true" />
+              <span
+                className={`state-bar ${session.state}`}
+                aria-hidden="true"
+              />
               <span className="session-copy">
                 <span className="session-title-row">
                   <strong className="session-title">{session.title}</strong>
@@ -472,6 +488,12 @@ function SessionsView({
                 <span className="session-cwd">{session.cwd}</span>
                 <span className="session-meta">
                   <span className="harness-tag">{session.harnessId}</span>
+                  {session.accessMode === "full" ? (
+                    <span className="access-badge full">
+                      <Icon name="unlock" />
+                      完全访问
+                    </span>
+                  ) : null}
                   <span className="session-time">
                     {relativeTime(session.updatedAt)}
                   </span>
@@ -515,6 +537,12 @@ function SessionsView({
                   <span className={`session-badge ${selectedSession.state}`}>
                     {stateLabel(selectedSession.state)}
                   </span>
+                  {selectedSession.accessMode === "full" ? (
+                    <span className="access-badge full">
+                      <Icon name="unlock" />
+                      完全访问
+                    </span>
+                  ) : null}
                 </div>
                 <small>{selectedSession.cwd}</small>
               </div>
@@ -652,6 +680,33 @@ function SessionsView({
                 placeholder="例如：审查当前分支的改动并总结风险"
               />
             </label>
+            <label
+              className={`full-access-control ${
+                fullAccess ? "enabled" : ""
+              } ${!selectedHarness?.fullAccessSupported ? "unsupported" : ""}`}
+            >
+              <input
+                className="full-access-checkbox"
+                type="checkbox"
+                checked={fullAccess}
+                onChange={(event) => setFullAccess(event.target.checked)}
+                disabled={!selectedHarness?.fullAccessSupported}
+              />
+              <span className="full-access-icon" aria-hidden="true">
+                <Icon name="unlock" />
+              </span>
+              <span className="full-access-copy">
+                <strong>完全访问此电脑</strong>
+                <small>
+                  {selectedHarness?.fullAccessSupported
+                    ? "本会话跳过后续权限确认，可访问当前电脑用户能访问的全部内容。"
+                    : "当前 harness 尚未接入一键完全访问。"}
+                </small>
+              </span>
+              <span className="switch-track" aria-hidden="true">
+                <span />
+              </span>
+            </label>
             <button
               className="primary sheet-submit"
               disabled={!availableHarnesses.length}
@@ -787,8 +842,7 @@ function FilesView({
   const segments = path.split(/[\\/]/).filter(Boolean);
   const directories =
     listing?.entries.filter((entry) => entry.kind === "directory") ?? [];
-  const files =
-    listing?.entries.filter((entry) => entry.kind === "file") ?? [];
+  const files = listing?.entries.filter((entry) => entry.kind === "file") ?? [];
 
   return (
     <section className="files-panel panel">
@@ -989,7 +1043,9 @@ function ApprovalCard({
   const highRisk = approval.risk === "high";
 
   return (
-    <article className={`approval-card ${approval.status} risk-${approval.risk}`}>
+    <article
+      className={`approval-card ${approval.status} risk-${approval.risk}`}
+    >
       <div className="approval-topline">
         <span className={`risk ${approval.risk}`}>
           {highRisk ? (
@@ -1005,7 +1061,9 @@ function ApprovalCard({
       <p>{approval.description}</p>
       <div className="approval-timing">
         <span>{relativeTime(approval.createdAt)}请求</span>
-        <span className={`expiry ${isExpiringSoon(approval.expiresAt) ? "soon" : ""}`}>
+        <span
+          className={`expiry ${isExpiringSoon(approval.expiresAt) ? "soon" : ""}`}
+        >
           {expiryLabel(approval.expiresAt)}
         </span>
       </div>
@@ -1122,6 +1180,7 @@ type IconName =
   | "chevron"
   | "levelup"
   | "lock"
+  | "unlock"
   | "alert"
   | "check"
   | "pulse"
@@ -1157,6 +1216,13 @@ function Icon({ name }: { name: IconName }) {
         <svg {...common}>
           <path d="M12 3 5 6v5c0 4 3 7 7 9 4-2 7-5 7-9V6z" />
           <path d="m9 12 2 2 4-4" />
+        </svg>
+      );
+    case "unlock":
+      return (
+        <svg {...common}>
+          <rect x="5" y="10" width="14" height="10" rx="2" />
+          <path d="M9 10V7a3 3 0 0 1 5.8-1" />
         </svg>
       );
     case "settings":

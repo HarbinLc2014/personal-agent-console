@@ -2,6 +2,7 @@ import * as pty from "node-pty";
 import {
   SessionSchema,
   createAgentEvent,
+  type AccessMode,
   type AgentEvent,
   type Harness,
   type Session,
@@ -37,6 +38,8 @@ export class SessionManager {
       (item) => item.id === session.harnessId && item.available,
     );
     if (!harness) throw new Error("Harness is unavailable");
+    if (session.accessMode === "full" && !harness.fullAccessSupported)
+      throw new Error("Harness does not support full-access sessions");
     const cwd = this.policy.assertDirectory(session.cwd);
     const managed: ManagedSession = {
       session: {
@@ -45,13 +48,17 @@ export class SessionManager {
         state: "running",
         updatedAt: new Date().toISOString(),
       },
-      process: pty.spawn(harness.command, [], {
-        name: "xterm-256color",
-        cols: 100,
-        rows: 30,
-        cwd,
-        env: sanitizedChildEnv(),
-      }),
+      process: pty.spawn(
+        harness.command,
+        harnessLaunchArgs(harness.id, session.accessMode),
+        {
+          name: "xterm-256color",
+          cols: 100,
+          rows: 30,
+          cwd,
+          env: sanitizedChildEnv(),
+        },
+      ),
       outputBuffer: "",
       stopRequested: false,
     };
@@ -181,6 +188,17 @@ export class SessionManager {
       }),
     );
   }
+}
+
+export function harnessLaunchArgs(
+  harnessId: string,
+  accessMode: AccessMode,
+): string[] {
+  if (accessMode !== "full") return [];
+  if (harnessId === "codex")
+    return ["--dangerously-bypass-approvals-and-sandbox"];
+  if (harnessId === "claude") return ["--dangerously-skip-permissions"];
+  return [];
 }
 
 function asString(value: unknown, field: string): string {

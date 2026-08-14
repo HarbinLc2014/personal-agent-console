@@ -54,8 +54,13 @@ try {
       harnessId: "shell",
       cwd: temporaryRoot,
       title: "Automated E2E PTY",
+      accessMode: "full",
     },
   });
+  assert(
+    started.session.accessMode === "full",
+    "full-access session mode was not preserved",
+  );
   await api(baseUrl, `/api/sessions/${started.session.id}/input`, {
     method: "POST",
     body: { text: "printf E2E_PTY_OK; exit", submit: true },

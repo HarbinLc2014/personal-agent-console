@@ -9,6 +9,7 @@
 - 多电脑上线、离线状态与 harness 自动检测
 - 由 daemon 启动并持有真实 PTY 会话
 - 手机实时查看终端输出、发送输入、`Ctrl-C`、停止会话
+- 手机可在启动单个 Codex/Claude Code 会话时授予完全访问；该会话跳过后续 harness 权限确认
 - 白名单目录浏览、手机接收文件、手机发送文件
 - 新文件直接写入；覆盖已有文件必须经过一次性人工审批
 - 路径穿越与符号链接逃逸防护、文件大小限制、覆盖前 stale-file 校验
@@ -17,6 +18,17 @@
 - App token 与 daemon token 分离；daemon 启动 agent 子进程时不会传递 `FLEET_*` 凭据
 
 当前 harness 集成是通用 PTY 适配器。协议已经预留结构化 tool-call 事件，但 Codex/Claude/Pi/OpenCode 的专用事件解析器还没有实现，因此目前这些工具调用会作为终端输出显示，不应宣称已经完成结构化工具审计。
+
+## 会话级完全访问
+
+新建会话时可以在手机上打开“完全访问此电脑”。授权只绑定该次会话，不会永久修改 daemon，也不会改变手机文件服务的白名单与覆盖审批规则。
+
+- Codex 会以 `--dangerously-bypass-approvals-and-sandbox` 启动。
+- Claude Code 会以 `--dangerously-skip-permissions` 启动。
+- 该会话可以访问当前操作系统用户本身能访问的文件、凭据和命令，不再受 `FLEET_ALLOWED_ROOTS` 限制；白名单只约束手机文件页。
+- Pi/OpenCode 暂未启用一键完全访问，直到加入并验证各自的专用适配器。
+
+这是高风险授权，应只在你控制且信任的电脑和会话上开启。[Codex CLI 官方参考](https://learn.chatgpt.com/docs/developer-commands?surface=cli)也将其无审批、无沙箱模式标为极高风险，并建议只在外部加固环境使用；Claude Code 的对应参数见[官方 CLI 参考](https://docs.anthropic.com/en/docs/claude-code/cli-usage)。
 
 ## 结构
 

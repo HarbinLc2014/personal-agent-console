@@ -10,12 +10,16 @@ export const SessionStateSchema = z.enum([
 ]);
 export type SessionState = z.infer<typeof SessionStateSchema>;
 
+export const AccessModeSchema = z.enum(["approval", "full"]);
+export type AccessMode = z.infer<typeof AccessModeSchema>;
+
 export const HarnessSchema = z.object({
   id: z.string().min(1),
   label: z.string().min(1),
   command: z.string().min(1),
   available: z.boolean(),
   structuredEvents: z.boolean(),
+  fullAccessSupported: z.boolean().default(false),
 });
 export type Harness = z.infer<typeof HarnessSchema>;
 
@@ -37,6 +41,7 @@ export const SessionSchema = z.object({
   cwd: z.string().min(1),
   title: z.string().min(1),
   state: SessionStateSchema,
+  accessMode: AccessModeSchema.default("approval"),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
 });

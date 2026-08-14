@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { DaemonToRelaySchema, createAgentEvent } from "./index.js";
+import {
+  DaemonToRelaySchema,
+  HarnessSchema,
+  SessionSchema,
+  createAgentEvent,
+} from "./index.js";
 
 describe("protocol", () => {
   it("creates and validates an agent event", () => {
@@ -30,5 +35,29 @@ describe("protocol", () => {
         },
       }),
     ).toThrow();
+  });
+
+  it("defaults old harnesses and sessions to approval mode", () => {
+    expect(
+      HarnessSchema.parse({
+        id: "codex",
+        label: "Codex",
+        command: "codex",
+        available: true,
+        structuredEvents: false,
+      }).fullAccessSupported,
+    ).toBe(false);
+    expect(
+      SessionSchema.parse({
+        id: crypto.randomUUID(),
+        machineId: "machine-12345678",
+        harnessId: "codex",
+        cwd: "/workspace",
+        title: "Legacy session",
+        state: "running",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }).accessMode,
+    ).toBe("approval");
   });
 });

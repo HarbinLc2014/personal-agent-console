@@ -18,6 +18,7 @@ import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import { WebSocket, WebSocketServer } from "ws";
 import {
+  AccessModeSchema,
   AppClientMessageSchema,
   DaemonToRelaySchema,
   RelayToDaemonSchema,
@@ -36,6 +37,7 @@ const StartSessionBodySchema = z.object({
   cwd: z.string().min(1),
   title: z.string().min(1).max(120).optional(),
   initialPrompt: z.string().max(100_000).optional(),
+  accessMode: AccessModeSchema.default("approval"),
 });
 
 const SessionInputBodySchema = z.object({
@@ -396,6 +398,12 @@ export class RelayServer {
       );
       if (!harness)
         throw new HttpError(400, "Harness is not available on this machine");
+      if (body.accessMode === "full" && !harness.fullAccessSupported) {
+        throw new HttpError(
+          400,
+          "Harness does not support full-access sessions",
+        );
+      }
       const now = isoNow();
       const session = SessionSchema.parse({
         id: crypto.randomUUID(),
@@ -407,6 +415,7 @@ export class RelayServer {
           body.initialPrompt?.slice(0, 80) ??
           `${harness.label} session`,
         state: "starting",
+        accessMode: body.accessMode,
         createdAt: now,
         updatedAt: now,
       });

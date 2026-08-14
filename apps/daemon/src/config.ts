@@ -64,11 +64,16 @@ function detectHarnesses(): Harness[] {
       structuredEvents: false,
     },
   ];
-  const detected = candidates.map((candidate) => ({
-    ...candidate,
-    command: findExecutable(candidate.command) ?? candidate.command,
-    available: Boolean(findExecutable(candidate.command)),
-  }));
+  const detected = candidates.map((candidate) => {
+    const executable = findExecutable(candidate.command);
+    return {
+      ...candidate,
+      command: executable ?? candidate.command,
+      available: Boolean(executable),
+      fullAccessSupported:
+        candidate.id === "codex" || candidate.id === "claude",
+    };
+  });
   if (process.env.FLEET_ENABLE_SHELL === "1") {
     const configuredShell = process.env.SHELL;
     const command =
@@ -83,6 +88,7 @@ function detectHarnesses(): Harness[] {
       command,
       available: existsSync(command) || Boolean(findExecutable(command)),
       structuredEvents: false,
+      fullAccessSupported: true,
     });
   }
   return detected;

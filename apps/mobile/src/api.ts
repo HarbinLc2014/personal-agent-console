@@ -67,6 +67,7 @@ export class FleetApi {
     cwd: string;
     title?: string;
     initialPrompt?: string;
+    accessMode?: "approval" | "full";
   }): Promise<{ session: Session }> {
     return this.request("/api/sessions", { method: "POST", body: input });
   }

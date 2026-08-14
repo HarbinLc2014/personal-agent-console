@@ -344,6 +344,245 @@ export function App() {
   );
 }
 
+function useNow(intervalMs: number): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), intervalMs);
+    return () => window.clearInterval(timer);
+  }, [intervalMs]);
+  return now;
+}
+
+type AgentTone = "codex" | "claude" | "gemini" | "generic";
+
+function agentPersona(harnessId: string): {
+  name: string;
+  monogram: string;
+  tone: AgentTone;
+} {
+  const id = harnessId.toLowerCase();
+  if (id.includes("codex"))
+    return { name: "Codex", monogram: "Cx", tone: "codex" };
+  if (id.includes("claude"))
+    return { name: "Claude", monogram: "Cl", tone: "claude" };
+  if (id.includes("gemini"))
+    return { name: "Gemini", monogram: "Gm", tone: "gemini" };
+  const name = harnessId ? harnessId[0].toUpperCase() + harnessId.slice(1) : "?";
+  return {
+    name,
+    monogram: (harnessId.slice(0, 2) || "?").toUpperCase(),
+    tone: "generic",
+  };
+}
+
+type LiveStatus = {
+  key: "streaming" | "running" | "waiting" | "starting" | "idle";
+  label: string;
+};
+
+function liveStatus(
+  state: Session["state"],
+  lastOutputAt: number | null,
+  now: number,
+): LiveStatus {
+  if (state === "running") {
+    if (lastOutputAt && now - lastOutputAt < 2500)
+      return { key: "streaming", label: "输出中" };
+    return { key: "running", label: "运行中" };
+  }
+  if (state === "waiting") return { key: "waiting", label: "等待输入" };
+  if (state === "starting") return { key: "starting", label: "启动中" };
+  return { key: "idle", label: stateLabel(state) };
+}
+
+type ActivityItem = {
+  id: string;
+  kind: "tool" | "file" | "approval" | "notice" | "state";
+  tone: "accent" | "amber" | "red" | "muted";
+  icon: IconName;
+  title: string;
+  detail: string;
+  at: string;
+  durationMs?: number;
+  ongoing?: boolean;
+};
+
+type ActivitySummary = {
+  items: ActivityItem[];
+  toolCalls: number;
+  toolsRunning: number;
+  filesChanged: number;
+  lastOutputAt: number | null;
+  structured: number;
+};
+
+function pickString(
+  data: Record<string, unknown>,
+  keys: string[],
+): string | undefined {
+  for (const key of keys) {
+    const value = data[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return undefined;
+}
+
+function deriveActivity(events: AgentEvent[]): ActivitySummary {
+  const items: ActivityItem[] = [];
+  const ongoingTools = new Map<string, ActivityItem>();
+  let toolCalls = 0;
+  let filesChanged = 0;
+  let lastOutputAt: number | null = null;
+
+  for (const event of events) {
+    const data = event.data ?? {};
+    const at = event.createdAt;
+    const ts = Date.parse(at);
+    if (event.type === "session.output") {
+      if (!Number.isNaN(ts)) lastOutputAt = Math.max(lastOutputAt ?? 0, ts);
+      continue;
+    }
+    if (event.type === "tool.call.started") {
+      toolCalls += 1;
+      const name = pickString(data, ["name", "tool", "title", "command"]);
+      const key =
+        pickString(data, ["callId", "id", "invocationId"]) ??
+        `${name ?? "tool"}:${event.id}`;
+      const item: ActivityItem = {
+        id: event.id,
+        kind: "tool",
+        tone: "accent",
+        icon: "tool",
+        title: name ?? "工具调用",
+        detail: pickString(data, ["args", "input", "detail"]) ?? "执行中…",
+        at,
+        ongoing: true,
+      };
+      ongoingTools.set(key, item);
+      items.push(item);
+      continue;
+    }
+    if (event.type === "tool.call.finished") {
+      const name = pickString(data, ["name", "tool", "title", "command"]);
+      const key =
+        pickString(data, ["callId", "id", "invocationId"]) ?? `${name}:`;
+      let matched: ActivityItem | undefined;
+      for (const [candidateKey, candidate] of ongoingTools) {
+        if (
+          candidateKey === key ||
+          (name && candidate.title === name && candidate.ongoing)
+        ) {
+          matched = candidate;
+          ongoingTools.delete(candidateKey);
+          break;
+        }
+      }
+      const failed =
+        data.ok === false ||
+        data.status === "error" ||
+        data.status === "failed";
+      if (matched) {
+        matched.ongoing = false;
+        matched.tone = failed ? "red" : "accent";
+        matched.detail =
+          pickString(data, ["result", "output", "detail"]) ??
+          (failed ? "失败" : "完成");
+        const started = Date.parse(matched.at);
+        if (!Number.isNaN(started) && !Number.isNaN(ts))
+          matched.durationMs = Math.max(0, ts - started);
+      } else {
+        items.push({
+          id: event.id,
+          kind: "tool",
+          tone: failed ? "red" : "accent",
+          icon: "tool",
+          title: name ?? "工具完成",
+          detail: pickString(data, ["result", "output", "detail"]) ?? "完成",
+          at,
+        });
+      }
+      continue;
+    }
+    if (event.type === "file.changed") {
+      filesChanged += 1;
+      const path = pickString(data, ["relativePath", "path", "file", "name"]);
+      const action = pickString(data, ["action", "change", "kind"]);
+      items.push({
+        id: event.id,
+        kind: "file",
+        tone: "muted",
+        icon: "file",
+        title: path ?? "文件变更",
+        detail: action ?? "已更新",
+        at,
+      });
+      continue;
+    }
+    if (
+      event.type === "approval.requested" ||
+      event.type === "approval.resolved"
+    ) {
+      const requested = event.type === "approval.requested";
+      items.push({
+        id: event.id,
+        kind: "approval",
+        tone: requested ? "amber" : "muted",
+        icon: "shield",
+        title: pickString(data, ["title", "kind"]) ?? eventLabel(event.type),
+        detail:
+          pickString(data, ["description", "status", "detail"]) ??
+          (requested ? "等待审批" : "已处理"),
+        at,
+      });
+      continue;
+    }
+    if (event.type === "system.notice") {
+      items.push({
+        id: event.id,
+        kind: "notice",
+        tone: "muted",
+        icon: "spark",
+        title: "系统消息",
+        detail: pickString(data, ["message", "text", "detail"]) ?? "",
+        at,
+      });
+      continue;
+    }
+    if (event.type === "session.state") {
+      const state = pickString(data, ["state"]);
+      items.push({
+        id: event.id,
+        kind: "state",
+        tone: state === "failed" ? "red" : "muted",
+        icon: "activity",
+        title: "状态变化",
+        detail: state ? stateLabel(state as Session["state"]) : "",
+        at,
+      });
+      continue;
+    }
+  }
+
+  return {
+    items,
+    toolCalls,
+    toolsRunning: ongoingTools.size,
+    filesChanged,
+    lastOutputAt,
+    structured: items.length,
+  };
+}
+
+function formatDuration(ms: number): string {
+  const totalSeconds = Math.floor(ms / 1000);
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes < 60) return `${minutes}m ${seconds}s`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ${minutes % 60}m`;
+}
+
 function SessionsView({
   api,
   machine,
@@ -398,6 +637,8 @@ function SessionsView({
     .filter((event) => event.type === "session.output")
     .map((event) => String(event.data.chunk ?? ""))
     .join("");
+  const now = useNow(1000);
+  const activity = useMemo(() => deriveActivity(events), [events]);
 
   function openSession(id: string) {
     onSelect(id);
@@ -465,42 +706,69 @@ function SessionsView({
         </div>
 
         <div className="session-list">
-          {sessions.map((session) => (
-            <button
-              key={session.id}
-              className={`session-row ${
-                session.id === selectedSession?.id ? "selected" : ""
-              }`}
-              onClick={() => openSession(session.id)}
-              aria-pressed={session.id === selectedSession?.id}
-            >
-              <span
-                className={`state-bar ${session.state}`}
-                aria-hidden="true"
-              />
-              <span className="session-copy">
-                <span className="session-title-row">
-                  <strong className="session-title">{session.title}</strong>
-                  <span className={`session-badge ${session.state}`}>
-                    {stateLabel(session.state)}
-                  </span>
+          {sessions.map((session) => {
+            const persona = agentPersona(session.harnessId);
+            const live = liveStatus(session.state, null, now);
+            const active =
+              session.state === "running" || session.state === "starting";
+            const runtimeMs = active
+              ? now - Date.parse(session.createdAt)
+              : Date.parse(session.updatedAt) - Date.parse(session.createdAt);
+            return (
+              <button
+                key={session.id}
+                className={`agent-card ${
+                  session.id === selectedSession?.id ? "selected" : ""
+                } ${active ? "is-live" : ""}`}
+                data-tone={persona.tone}
+                onClick={() => openSession(session.id)}
+                aria-pressed={session.id === selectedSession?.id}
+              >
+                <span className="agent-avatar" aria-hidden="true">
+                  {persona.monogram}
+                  {active ? <span className="avatar-ring" /> : null}
                 </span>
-                <span className="session-cwd">{session.cwd}</span>
-                <span className="session-meta">
-                  <span className="harness-tag">{session.harnessId}</span>
-                  {session.accessMode === "full" ? (
-                    <span className="access-badge full">
-                      <Icon name="unlock" />
-                      完全访问
+                <span className="agent-body">
+                  <span className="agent-line-1">
+                    <strong className="agent-name">{persona.name}</strong>
+                    <span className={`live-pill ${live.key}`}>
+                      {live.key === "streaming" || live.key === "running" ? (
+                        <span className="live-dots" aria-hidden="true">
+                          <i />
+                          <i />
+                          <i />
+                        </span>
+                      ) : null}
+                      {live.label}
                     </span>
-                  ) : null}
-                  <span className="session-time">
-                    {relativeTime(session.updatedAt)}
+                    {session.accessMode === "full" ? (
+                      <span
+                        className="access-badge full compact"
+                        title="完全访问此电脑"
+                      >
+                        <Icon name="unlock" />
+                      </span>
+                    ) : null}
+                  </span>
+                  <span className="agent-title">{session.title}</span>
+                  <span className="agent-cwd">{session.cwd}</span>
+                  <span className="agent-foot">
+                    <span className="harness-tag">{session.harnessId}</span>
+                    <span className="agent-foot-time">
+                      {active ? (
+                        <>
+                          <Icon name="clock" />
+                          {formatDuration(Math.max(0, runtimeMs))}
+                        </>
+                      ) : (
+                        relativeTime(session.updatedAt)
+                      )}
+                    </span>
                   </span>
                 </span>
-              </span>
-            </button>
-          ))}
+              </button>
+            );
+          })}
           {!sessions.length ? (
             <div className="rail-empty">
               <p>这台电脑上还没有会话</p>
@@ -519,7 +787,10 @@ function SessionsView({
       <section className="terminal-panel panel">
         {selectedSession ? (
           <>
-            <div className="terminal-header">
+            <div
+              className="terminal-header"
+              data-tone={agentPersona(selectedSession.harnessId).tone}
+            >
               <button
                 className="back-button"
                 onClick={() => setMobileTerminal(false)}
@@ -527,15 +798,48 @@ function SessionsView({
               >
                 <Icon name="back" />
               </button>
+              <span
+                className={`agent-avatar lg ${running || selectedSession.state === "starting" ? "" : "quiet"}`}
+                aria-hidden="true"
+              >
+                {agentPersona(selectedSession.harnessId).monogram}
+                {running || selectedSession.state === "starting" ? (
+                  <span className="avatar-ring" />
+                ) : null}
+              </span>
               <div className="terminal-id">
                 <div className="terminal-title-row">
+                  <strong>{agentPersona(selectedSession.harnessId).name}</strong>
                   <span
-                    className={`status-dot ${sessionDot(selectedSession.state)}`}
-                    aria-hidden="true"
-                  />
-                  <strong>{selectedSession.title}</strong>
-                  <span className={`session-badge ${selectedSession.state}`}>
-                    {stateLabel(selectedSession.state)}
+                    className={`live-pill ${
+                      liveStatus(
+                        selectedSession.state,
+                        activity.lastOutputAt,
+                        now,
+                      ).key
+                    }`}
+                  >
+                    {(() => {
+                      const key = liveStatus(
+                        selectedSession.state,
+                        activity.lastOutputAt,
+                        now,
+                      ).key;
+                      return key === "streaming" || key === "running" ? (
+                        <span className="live-dots" aria-hidden="true">
+                          <i />
+                          <i />
+                          <i />
+                        </span>
+                      ) : null;
+                    })()}
+                    {
+                      liveStatus(
+                        selectedSession.state,
+                        activity.lastOutputAt,
+                        now,
+                      ).label
+                    }
                   </span>
                   {selectedSession.accessMode === "full" ? (
                     <span className="access-badge full">
@@ -544,7 +848,13 @@ function SessionsView({
                     </span>
                   ) : null}
                 </div>
-                <small>{selectedSession.cwd}</small>
+                <small>
+                  <span className="terminal-task">{selectedSession.title}</span>
+                  <span className="terminal-sep" aria-hidden="true">
+                    ·
+                  </span>
+                  <span className="terminal-cwd">{selectedSession.cwd}</span>
+                </small>
               </div>
               <div className="terminal-actions">
                 <button
@@ -574,10 +884,25 @@ function SessionsView({
                 </button>
               </div>
             </div>
-            <pre className="terminal-output" ref={outputRef} tabIndex={0}>
-              {stripAnsi(output) || "等待 harness 输出…"}
-            </pre>
-            <EventTimeline events={events} />
+            <ActivityOverview
+              session={selectedSession}
+              activity={activity}
+              now={now}
+            />
+            <div className="terminal-body">
+              <pre className="terminal-output" ref={outputRef} tabIndex={0}>
+                {stripAnsi(output) || "等待 harness 输出…"}
+              </pre>
+              <ActivityStream
+                items={activity.items}
+                structuredEvents={
+                  machine?.harnesses.find(
+                    (harness) => harness.id === selectedSession.harnessId,
+                  )?.structuredEvents ?? false
+                }
+                running={running}
+              />
+            </div>
             <form className="command-bar" onSubmit={sendInput}>
               <span className="command-prompt" aria-hidden="true">
                 ›
@@ -725,38 +1050,153 @@ function SessionsView({
   );
 }
 
-function EventTimeline({ events }: { events: AgentEvent[] }) {
-  const items = events.filter((event) =>
-    [
-      "tool.call.started",
-      "tool.call.finished",
-      "approval.requested",
-      "file.changed",
-      "system.notice",
-    ].includes(event.type),
-  );
-  if (!items.length) return null;
+function ActivityOverview({
+  session,
+  activity,
+  now,
+}: {
+  session: Session;
+  activity: ActivitySummary;
+  now: number;
+}) {
+  const active = session.state === "running" || session.state === "starting";
+  const runtimeMs = active
+    ? now - Date.parse(session.createdAt)
+    : Date.parse(session.updatedAt) - Date.parse(session.createdAt);
   return (
-    <details className="event-timeline">
-      <summary>
-        <Icon name="pulse" />
-        {items.length} 条结构化事件
-      </summary>
-      <div className="event-scroll">
-        {items.slice(-20).map((event) => (
-          <div className="event-row" key={event.id}>
-            <time>
-              {new Date(event.createdAt).toLocaleTimeString([], {
-                hour: "2-digit",
-                minute: "2-digit",
-              })}
-            </time>
-            <strong>{eventLabel(event.type)}</strong>
-            <code>{compactEventData(event.data)}</code>
-          </div>
-        ))}
+    <div className="activity-overview" role="group" aria-label="活动概览">
+      <div className="stat">
+        <span className="stat-icon" aria-hidden="true">
+          <Icon name="clock" />
+        </span>
+        <span className="stat-copy">
+          <strong>{formatDuration(Math.max(0, runtimeMs))}</strong>
+          <small>运行时长</small>
+        </span>
       </div>
-    </details>
+      <div className="stat">
+        <span className="stat-icon" aria-hidden="true">
+          <Icon name="tool" />
+        </span>
+        <span className="stat-copy">
+          <strong>
+            {activity.toolCalls}
+            {activity.toolsRunning ? (
+              <em className="stat-running"> · {activity.toolsRunning} 进行</em>
+            ) : null}
+          </strong>
+          <small>工具调用</small>
+        </span>
+      </div>
+      <div className="stat">
+        <span className="stat-icon" aria-hidden="true">
+          <Icon name="file" />
+        </span>
+        <span className="stat-copy">
+          <strong>{activity.filesChanged}</strong>
+          <small>文件变更</small>
+        </span>
+      </div>
+      <div className="stat">
+        <span className="stat-icon" aria-hidden="true">
+          <Icon name="activity" />
+        </span>
+        <span className="stat-copy">
+          <strong>{activity.structured}</strong>
+          <small>过程事件</small>
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function ActivityStream({
+  items,
+  structuredEvents,
+  running,
+}: {
+  items: ActivityItem[];
+  structuredEvents: boolean;
+  running: boolean;
+}) {
+  const streamRef = useRef<HTMLDivElement>(null);
+  const recent = items.slice(-40);
+  useEffect(() => {
+    if (streamRef.current)
+      streamRef.current.scrollTop = streamRef.current.scrollHeight;
+  }, [items.length]);
+
+  return (
+    <aside className="activity-rail" aria-label="活动流">
+      <div className="activity-rail-head">
+        <span className="rail-title">
+          <Icon name="activity" />
+          活动流
+        </span>
+        {running ? (
+          <span className="rail-live" aria-hidden="true">
+            <span className="live-dots">
+              <i />
+              <i />
+              <i />
+            </span>
+            实时
+          </span>
+        ) : null}
+      </div>
+      <div className="activity-scroll" ref={streamRef}>
+        {recent.length ? (
+          recent.map((item) => (
+            <div className={`activity-item tone-${item.tone}`} key={item.id}>
+              <span className="activity-icon" aria-hidden="true">
+                <Icon name={item.icon} />
+              </span>
+              <span className="activity-copy">
+                <span className="activity-top">
+                  <strong>{item.title}</strong>
+                  {item.ongoing ? (
+                    <span className="activity-dots" aria-hidden="true">
+                      <i />
+                      <i />
+                      <i />
+                    </span>
+                  ) : item.durationMs != null ? (
+                    <span className="activity-dur">
+                      {formatDuration(item.durationMs)}
+                    </span>
+                  ) : null}
+                  <time>
+                    {new Date(item.at).toLocaleTimeString([], {
+                      hour: "2-digit",
+                      minute: "2-digit",
+                      second: "2-digit",
+                    })}
+                  </time>
+                </span>
+                {item.detail ? (
+                  <code className="activity-detail">{item.detail}</code>
+                ) : null}
+              </span>
+            </div>
+          ))
+        ) : (
+          <div className="activity-empty">
+            <span className="activity-empty-glyph" aria-hidden="true">
+              <Icon name={structuredEvents ? "pulse" : "terminal"} />
+            </span>
+            {structuredEvents ? (
+              <p>
+                这个 agent 支持结构化过程事件。工具调用、文件改动和审批会在这里实时出现。
+              </p>
+            ) : (
+              <p>
+                这个 harness 以终端流方式运行，执行过程请看左侧终端；文件与审批变化仍会在这里汇总。
+              </p>
+            )}
+          </div>
+        )}
+      </div>
+    </aside>
   );
 }
 
@@ -1184,7 +1624,11 @@ type IconName =
   | "alert"
   | "check"
   | "pulse"
-  | "desktop";
+  | "desktop"
+  | "tool"
+  | "clock"
+  | "activity"
+  | "spark";
 
 function Icon({ name }: { name: IconName }) {
   const common = {
@@ -1323,6 +1767,31 @@ function Icon({ name }: { name: IconName }) {
           <path d="M8 20h8M12 16v4" />
         </svg>
       );
+    case "tool":
+      return (
+        <svg {...common}>
+          <path d="M15.5 4.5a3.6 3.6 0 0 0-4.7 4.6L4 15.9V20h4l6.8-6.8a3.6 3.6 0 0 0 4.6-4.7l-2.6 2.6-2.1-.5-.5-2.1z" />
+        </svg>
+      );
+    case "clock":
+      return (
+        <svg {...common}>
+          <circle cx="12" cy="12" r="8" />
+          <path d="M12 8v4.4l2.8 1.8" />
+        </svg>
+      );
+    case "activity":
+      return (
+        <svg {...common}>
+          <path d="M5 20V11M12 20V4M19 20v-6" />
+        </svg>
+      );
+    case "spark":
+      return (
+        <svg {...common}>
+          <path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5 18 18M18 6l-2.5 2.5M8.5 15.5 6 18" />
+        </svg>
+      );
     default:
       return null;
   }
@@ -1439,18 +1908,4 @@ function stripAnsi(value: string): string {
     clean = next;
   }
   return clean.replace(/[\x08\r]/g, "");
-}
-
-function sessionDot(
-  state: Session["state"],
-): "online" | "connecting" | "offline" | "idle" {
-  if (state === "running") return "online";
-  if (state === "starting" || state === "waiting") return "connecting";
-  if (state === "failed") return "offline";
-  return "idle";
-}
-
-function compactEventData(data: Record<string, unknown>): string {
-  const encoded = JSON.stringify(data);
-  return encoded.length > 180 ? `${encoded.slice(0, 177)}…` : encoded;
 }

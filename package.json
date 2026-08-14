@@ -1,0 +1,30 @@
+{
+  "name": "personal-agent-console",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.19.0",
+  "scripts": {
+    "postinstall": "node scripts/ensure-node-pty-executable.mjs",
+    "predev": "pnpm --filter @agent-console/protocol build",
+    "dev": "concurrently -k -n relay,daemon,mobile -c blue,green,magenta \"pnpm --filter @agent-console/relay dev\" \"pnpm --filter @agent-console/daemon dev\" \"pnpm --filter @agent-console/mobile dev\"",
+    "build": "pnpm -r build",
+    "pretypecheck": "pnpm --filter @agent-console/protocol build",
+    "typecheck": "pnpm -r typecheck",
+    "pretest": "pnpm --filter @agent-console/protocol build",
+    "test": "pnpm -r test",
+    "e2e": "pnpm build && node scripts/e2e.mjs",
+    "start": "pnpm --filter @agent-console/relay start",
+    "start:daemon": "pnpm --filter @agent-console/daemon start",
+    "start:local": "concurrently -k -n relay,daemon -c blue,green \"pnpm start\" \"pnpm start:daemon\"",
+    "format:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "concurrently": "^9.2.1",
+    "prettier": "^3.6.2",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  }
+}
